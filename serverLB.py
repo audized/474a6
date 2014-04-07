@@ -8,6 +8,7 @@ import math
 import json
 import random
 import string
+import hashlib
 
 # Libraries that have to have been installed by pip
 import requests
@@ -28,6 +29,7 @@ port = config['port']
 ndb = config['ndb']
 dbBasePort = config['db-base-port']
 
+hash_algorithm = 'sha1'
 
 # Update the rating of entity
 # This can be accessed using;
@@ -57,8 +59,8 @@ def put_rating(entity):
 
     # YOUR CODE HERE
     # HASH THE ENTITY TO DETERMINE ITS SHARD
-    # PUT THE PORT FOR THE CORRECT SHARD IN url below
-    url = 'http://localhost:'+str(dbBasePort)+'/rating/'+entity
+    # PUT THE PORT FOR THE CORRECT SHARD IN url below 
+    url = 'http://localhost:'+str(dbBasePort+hashEntity(entity, ndb))+'/rating/'+entity
 
     # RESUME BOILERPLATE CODE...
     # Update the rating
@@ -90,7 +92,16 @@ def get_rating(entity):
     # DETERMINE THE RIGHT DB INSTANCE TO CALL,
     # DEPENDING UPON WHETHER THE GET IS STRONGLY OR WEAKLY CONSISTENT
     # ASSIGN THE ENDPOINT TO url
-    url = 'http://localhost:3000/rating/strawberry-cream-white-tea'
+    consistency = request.query.get('consistency')
+    shard = 0
+    # If weakly consistent, get the rating from a randomly selected DB.
+    # Otherwise, hash the entity to get the primary instance.
+    if consistency and consistency == 'weak':
+        shard = random.randint(0, ndb-1)
+    else:
+	shard = hashEntity(entity, ndb)
+
+    url = 'http://localhost:'+str(dbBasePort+shard)+'/rating/'+entity
 
     # RESUME BOILERPLATE
     curdata = requests.get(url).json()
@@ -112,6 +123,13 @@ def delete_rating(entity):
     url = 'http://localhost:'+str(dbprimary)+'/rating/'+entity
     resp = requests.delete(url)
     return resp
+
+# Determine the primary instance for the tea
+def hashEntity(entity, numDBs):
+	# Hash the entity to a hexadecimal value and then convert the value to int
+	h = hashlib.new(hash_algorithm)
+	h.update(entity)
+	return int(long(h.hexdigest(), base=16) % numDBs)
 
 # Fire the engines
 if __name__ == '__main__':
