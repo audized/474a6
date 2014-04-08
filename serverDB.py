@@ -35,6 +35,10 @@ if (len(sys.argv) > 1):
 qport = config['qport']
 queue = Queue(qport)
 id = config['id']
+digest_list = []
+db_id = 'db'+str(id)
+ndb = config['ndb']
+numWrites = 0
 
 # Connect to a single Redis instance
 client = redis.StrictRedis(host=config['servers'][0]['host'], port=config['servers'][0]['port'], db=0)
@@ -73,16 +77,48 @@ def put_rating(entity):
     new_choices = []
     new_vcl = []
     if not old_rating:
+        new_choices = [setrating]
+        new_vcl = [setclock]
         client.hset(key, 'rating', setrating)
-        client.hset(key, 'choices', [setrating])
-        client.hset(key, 'clocks', jsonify_vcl([setclock]))
+        client.hset(key, 'choices', new_choices)
+        client.hset(key, 'clocks', jsonify_vcl(new_vcl))
         finalrating = setrating
     else:
         # SAVE NEW VALUES
-        finalrating, new_choices, new_vcl = merge(True, key, old_rating, setrating, setclock,
-                                                    eval(client.hget(key, 'choices')),
-                                                    eval(client.hget(key, 'clocks')))
+        finalrating, new_choices, new_vcl = merge(key, old_rating, setrating, setclock)
+
+    global digest_list
+    digest_list.append((db_id, key, finalrating, new_choices, new_vcl))
+    global numWrites
+    numWrites+=1
+
     # GOSSIP
+    while 1:
+        msg = queue.get(db_id)
+        print "??????? in PUT: msg: " + str(msg)
+        # Stop checking if there's no message in the queue
+        if msg == None:
+            break
+        # Merge and pass on if the message was not originally PUT by this DB instance
+        elif msg['primary'] == db_id:
+            rating = None
+            choices = []
+            clocks = []
+            for i in range(len(msg['clocks'])):
+                key = msg['key']
+                print '############# key is: '+key
+                rating, choices, clocks = merge(key, None, msg['choices'][i], msg['clocks'][i])
+                digest_list.append((db_id, key, rating, choices, clocks))
+
+    # At 'config['digest-length']'th write, fire everything in digest list to its neighbor
+    if numWrites >= config['digest-length']:
+        nextNeighbor = 'db'+str((id+1)%ndb)
+        for digest in digest_list:
+	    (primary, key, rating, choices, clocks) = digest
+            queue.put(nextNeighbor, {'primary': primary, 'key': key, 'rating': rating, 'choices': choices, 'clocks': clocks})
+            print '!!!!!!! Rating for '+key+', '+str(rating)+', with choices '+str(choices)+' and clocks '+jsonify_vcl(clocks)+' resides on '+primary+' and is being sent to '+nextNeighbor+'\n'
+        digest_list = []
+        numWrites = 0
 
     # Return rating
     return {
@@ -98,15 +134,40 @@ def put_rating(entity):
 # This function also causes a gossip merge
 @route('/rating/<entity>', method='GET')
 def get_rating(entity):
-    key = '/rating/' + entity
-
-    rating = client.hget(key, 'rating')
-    choices = eval(client.hget(key, 'choices'))
-    clocks = eval(client.hget(key, 'clocks'))
     # YOUR CODE HERE
     # GOSSIP
+    while 1:
+        msg = queue.get(db_id)
+        print "??????? in GET: msg: " + str(msg)
+        # Stop checking if there's no message in the queue
+        if msg == None:
+            break
+        # Merge and pass on if the message was not originally PUT by this DB instance
+        elif msg['primary'] == db_id:
+            rating = None
+            choices = []
+            clocks = []
+            for i in range(len(msg['clocks'])):
+                key = msg['key']
+                rating, choices, clocks = merge(key, None, msg['choices'][i], msg['clocks'][i])
+                global digest_list
+                digest_list.append((db_id, key, rating, choices, clocks))
+
+    key = '/rating/' + entity
+
     # GET THE VALUE FROM THE DATABASE
     # RETURN IT, REPLACING FOLLOWING
+    rating = client.hget(key, 'rating')
+
+    if rating == None:
+        return {
+            'rating': 0.0,
+            'choices': [],
+            'clocks': []
+        }
+
+    choices = eval(client.hget(key, 'choices'))
+    clocks = eval(client.hget(key, 'clocks'))
     
     return {
         'rating': rating,
@@ -126,23 +187,23 @@ def delete_rating(entity):
     if count == 0: return abort(404)
     return { "rating": None }
 
-# Merge ratings and update DB (if updateDB is True)
+# Merge ratings and update DB
 # PARAMS:
-#    updateDB  - whether to update DB after merging
-#    key       - key for the tea (only needed if updateDB is True)
-#    oldrating - old rating
+#    key       - key for the tea
+#    oldrating - old rating (can be None, in which case the old rating will be retrieved
+#                from the DB here)
 #    setrating - new rating
 #    setclock  - clock to be compared to vcl
-#    choices   - choices of ratings with corresponding clocks in vcl
-#    vcl       - list of clocks to be compared with setclock
 # RETURN:
 #    finalrating - the average rating for the tea
 #    new_choices - the merged choices of ratings with corresponding clocks in new_vcl 
 #    new_vcl     - the merged list of clocks
-def merge(updateDB, key, oldrating, setrating, setclock, choices, vcl):
-    if updateDB and not key:
-        raise Exception("merge(...) in serverDB.py: key cannot be None if updateDB is True")
+def merge(key, oldrating, setrating, setclock):
     finalrating = oldrating
+    if (finalrating == None):
+        finalrating = client.hget(key, 'rating')
+    choices = eval(client.hget(key, 'choices'))
+    vcl = eval(client.hget(key, 'clocks'))
     new_vcl = []
     new_choices = []
     greaterThanAlreadyFound = False
@@ -182,11 +243,10 @@ def merge(updateDB, key, oldrating, setrating, setclock, choices, vcl):
             ratingSum+=choice
         finalrating = ratingSum/len(new_choices)
 
-        # update DB if necessary
-	if updateDB:
-            client.hset(key, 'rating', finalrating)
-            client.hset(key, 'choices', new_choices)
-            client.hset(key, 'clocks', jsonify_vcl(new_vcl))
+        # update DB
+        client.hset(key, 'rating', finalrating)
+        client.hset(key, 'choices', new_choices)
+        client.hset(key, 'clocks', jsonify_vcl(new_vcl))
     else:
         new_vcl = []
         new_choices = []
