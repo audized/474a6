@@ -74,6 +74,7 @@ def put_rating(entity):
     # if rating does not exist, add it. Otherwise..
     # SET THE RATING, CHOICES, AND CLOCKS IN THE DATABASE FOR THIS KEY
     # COMPUTE THE MEAN, finalrating
+    writeToDB = True
     new_choices = []
     new_vcl = []
     if not old_rating:
@@ -85,12 +86,14 @@ def put_rating(entity):
         finalrating = setrating
     else:
         # SAVE NEW VALUES
-        finalrating, new_choices, new_vcl = merge(key, old_rating, setrating, setclock)
+        writeToDB, finalrating, new_choices, new_vcl = merge(key, old_rating, setrating, setclock)
 
-    global digest_list
-    digest_list.append((db_id, key, finalrating, new_choices, new_vcl))
-    global numWrites
-    numWrites+=1
+    # Add to digest list only if the PUT request triggers an update to the DB
+    if writeToDB:
+        global digest_list
+        digest_list.append((db_id, key, finalrating, new_choices, new_vcl))
+        global numWrites
+        numWrites+=1
 
     # GOSSIP
     while 1:
@@ -195,9 +198,10 @@ def delete_rating(entity):
 #    setrating - new rating
 #    setclock  - clock to be compared to vcl
 # RETURN:
-#    finalrating - the average rating for the tea
-#    new_choices - the merged choices of ratings with corresponding clocks in new_vcl 
-#    new_vcl     - the merged list of clocks
+#    needToUpdateDB - whether the DB needs updating
+#    finalrating    - the average rating for the tea
+#    new_choices    - the merged choices of ratings with corresponding clocks in new_vcl 
+#    new_vcl        - the merged list of clocks
 def merge(key, oldrating, setrating, setclock):
     finalrating = oldrating
     if (finalrating == None):
@@ -207,12 +211,12 @@ def merge(key, oldrating, setrating, setclock):
     new_vcl = []
     new_choices = []
     greaterThanAlreadyFound = False
-    needToUpdateVCL = True
+    needToUpdateDB = True
     for i in range(0, len(vcl)):
         old_clock = VectorClock.fromDict(vcl[i])
         # if the received clock is older, nothing needs updating
         if setclock <= old_clock:
-            needToUpdateVCL = False
+            needToUpdateDB = False
             break
         else:
             # if the received clock is newer, make changes accordingly
@@ -230,7 +234,7 @@ def merge(key, oldrating, setrating, setclock):
 
     # Update lists only if the received clock is not older than or the same as any of the
     # existing clocks. Otherwise, return empty choices.
-    if needToUpdateVCL:
+    if needToUpdateDB:
         # if the received clock is not newer than any of the existing clocks, it's
         # incomparable
         if not greaterThanAlreadyFound:
@@ -251,7 +255,7 @@ def merge(key, oldrating, setrating, setclock):
         new_vcl = []
         new_choices = []
 
-    return finalrating, new_choices, new_vcl
+    return needToUpdateDB, finalrating, new_choices, new_vcl
 
 # Turn a list of vector clocks into a JSON formatted string to be stored in redis
 def jsonify_vcl(vcl):
