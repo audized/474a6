@@ -77,16 +77,7 @@ def put_rating(entity):
     writeToDB = True
     new_choices = []
     new_vcl = []
-    if not old_rating:
-        new_choices = [setrating]
-        new_vcl = [setclock]
-        client.hset(key, 'rating', setrating)
-        client.hset(key, 'choices', new_choices)
-        client.hset(key, 'clocks', jsonify_vcl(new_vcl))
-        finalrating = setrating
-    else:
-        # SAVE NEW VALUES
-        writeToDB, finalrating, new_choices, new_vcl = merge(key, old_rating, setrating, setclock)
+    writeToDB, finalrating, new_choices, new_vcl = merge(key, old_rating, setrating, setclock)
 
     # Add to digest list only if the PUT request triggers an update to the DB
     if writeToDB:
@@ -98,20 +89,18 @@ def put_rating(entity):
     # GOSSIP
     while 1:
         msg = queue.get(db_id)
-        print "??????? in PUT: msg: " + str(msg)
-        # Stop checking if there's no message in the queue
+        # Stop if there's no message in the queue
         if msg == None:
             break
         # Merge and pass on if the message was not originally PUT by this DB instance
-        elif msg['primary'] == db_id:
+        elif msg['primary'] != db_id:
             rating = None
             choices = []
             clocks = []
             for i in range(len(msg['clocks'])):
                 key = msg['key']
-                print '############# key is: '+key
-                rating, choices, clocks = merge(key, None, msg['choices'][i], msg['clocks'][i])
-                digest_list.append((db_id, key, rating, choices, clocks))
+                _, rating, choices, clocks = merge(key, None, msg['choices'][i], msg['clocks'][i])
+                digest_list.append((msg['primary'], key, rating, choices, clocks))
 
     # At 'config['digest-length']'th write, fire everything in digest list to its neighbor
     if numWrites >= config['digest-length']:
@@ -119,7 +108,6 @@ def put_rating(entity):
         for digest in digest_list:
 	    (primary, key, rating, choices, clocks) = digest
             queue.put(nextNeighbor, {'primary': primary, 'key': key, 'rating': rating, 'choices': choices, 'clocks': clocks})
-            print '!!!!!!! Rating for '+key+', '+str(rating)+', with choices '+str(choices)+' and clocks '+jsonify_vcl(clocks)+' resides on '+primary+' and is being sent to '+nextNeighbor+'\n'
         digest_list = []
         numWrites = 0
 
@@ -141,20 +129,19 @@ def get_rating(entity):
     # GOSSIP
     while 1:
         msg = queue.get(db_id)
-        print "??????? in GET: msg: " + str(msg)
-        # Stop checking if there's no message in the queue
+        # Stop if there's no message in the queue
         if msg == None:
             break
         # Merge and pass on if the message was not originally PUT by this DB instance
-        elif msg['primary'] == db_id:
+        elif msg['primary'] != db_id:
             rating = None
             choices = []
             clocks = []
             for i in range(len(msg['clocks'])):
                 key = msg['key']
-                rating, choices, clocks = merge(key, None, msg['choices'][i], msg['clocks'][i])
+                _, rating, choices, clocks = merge(key, None, msg['choices'][i], msg['clocks'][i])
                 global digest_list
-                digest_list.append((db_id, key, rating, choices, clocks))
+                digest_list.append((msg['primary'], key, rating, choices, clocks))
 
     key = '/rating/' + entity
 
@@ -198,25 +185,31 @@ def delete_rating(entity):
 #    setrating - new rating
 #    setclock  - clock to be compared to vcl
 # RETURN:
-#    needToUpdateDB - whether the DB needs updating
-#    finalrating    - the average rating for the tea
-#    new_choices    - the merged choices of ratings with corresponding clocks in new_vcl 
-#    new_vcl        - the merged list of clocks
+#    writeToDB   - whether a DB write occurs in this function
+#    finalrating - the average rating for the tea
+#    new_choices - the merged choices of ratings with corresponding clocks in new_vcl 
+#    new_vcl     - the merged list of clocks
 def merge(key, oldrating, setrating, setclock):
     finalrating = oldrating
-    if (finalrating == None):
+    if oldrating == None:
         finalrating = client.hget(key, 'rating')
+        # if a rating for the tea is not found in the DB, the rating is new. Add it.
+        if finalrating == None:
+            client.hset(key, 'rating', setrating)
+            client.hset(key, 'choices', [setrating])
+            client.hset(key, 'clocks', jsonify_vcl([setclock]))
+            return True, setrating, [setrating], [setclock]
     choices = eval(client.hget(key, 'choices'))
     vcl = eval(client.hget(key, 'clocks'))
     new_vcl = []
     new_choices = []
     greaterThanAlreadyFound = False
-    needToUpdateDB = True
+    writeToDB = True
     for i in range(0, len(vcl)):
         old_clock = VectorClock.fromDict(vcl[i])
         # if the received clock is older, nothing needs updating
         if setclock <= old_clock:
-            needToUpdateDB = False
+            writeToDB = False
             break
         else:
             # if the received clock is newer, make changes accordingly
@@ -234,7 +227,7 @@ def merge(key, oldrating, setrating, setclock):
 
     # Update lists only if the received clock is not older than or the same as any of the
     # existing clocks. Otherwise, return empty choices.
-    if needToUpdateDB:
+    if writeToDB:
         # if the received clock is not newer than any of the existing clocks, it's
         # incomparable
         if not greaterThanAlreadyFound:
@@ -255,7 +248,7 @@ def merge(key, oldrating, setrating, setclock):
         new_vcl = []
         new_choices = []
 
-    return needToUpdateDB, finalrating, new_choices, new_vcl
+    return writeToDB, finalrating, new_choices, new_vcl
 
 # Turn a list of vector clocks into a JSON formatted string to be stored in redis
 def jsonify_vcl(vcl):
