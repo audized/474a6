@@ -38,7 +38,6 @@ id = config['id']
 digest_list = []
 db_id = 'db'+str(id)
 ndb = config['ndb']
-numWrites = 0
 
 # Connect to a single Redis instance
 client = redis.StrictRedis(host=config['servers'][0]['host'], port=config['servers'][0]['port'], db=0)
@@ -78,38 +77,14 @@ def put_rating(entity):
     new_choices = []
     new_vcl = []
     writeToDB, finalrating, new_choices, new_vcl = merge(key, old_rating, setrating, setclock)
+    global digest_list
 
     # Add to digest list only if the PUT request triggers an update to the DB
     if writeToDB:
-        global digest_list
         digest_list.append((db_id, key, finalrating, new_choices, new_vcl))
-        global numWrites
-        numWrites+=1
 
     # GOSSIP
-    while 1:
-        msg = queue.get(db_id)
-        # Stop if there's no message in the queue
-        if msg == None:
-            break
-        # Merge and pass on if the message was not originally PUT by this DB instance
-        elif msg['primary'] != db_id:
-            rating = None
-            choices = []
-            clocks = []
-            for i in range(len(msg['clocks'])):
-                key = msg['key']
-                _, rating, choices, clocks = merge(key, None, msg['choices'][i], msg['clocks'][i])
-                digest_list.append((msg['primary'], key, rating, choices, clocks))
-
-    # At 'config['digest-length']'th write, fire everything in digest list to its neighbor
-    if numWrites >= config['digest-length']:
-        nextNeighbor = 'db'+str((id+1)%ndb)
-        for digest in digest_list:
-	    (primary, key, rating, choices, clocks) = digest
-            queue.put(nextNeighbor, {'primary': primary, 'key': key, 'rating': rating, 'choices': choices, 'clocks': clocks})
-        digest_list = []
-        numWrites = 0
+    gossip()
 
     # Return rating
     return {
@@ -127,21 +102,7 @@ def put_rating(entity):
 def get_rating(entity):
     # YOUR CODE HERE
     # GOSSIP
-    while 1:
-        msg = queue.get(db_id)
-        # Stop if there's no message in the queue
-        if msg == None:
-            break
-        # Merge and pass on if the message was not originally PUT by this DB instance
-        elif msg['primary'] != db_id:
-            rating = None
-            choices = []
-            clocks = []
-            for i in range(len(msg['clocks'])):
-                key = msg['key']
-                _, rating, choices, clocks = merge(key, None, msg['choices'][i], msg['clocks'][i])
-                global digest_list
-                digest_list.append((msg['primary'], key, rating, choices, clocks))
+    gossip()
 
     key = '/rating/' + entity
 
@@ -149,6 +110,7 @@ def get_rating(entity):
     # RETURN IT, REPLACING FOLLOWING
     rating = client.hget(key, 'rating')
 
+    # if the rating does not exist
     if rating == None:
         return {
             'rating': 0.0,
@@ -177,7 +139,8 @@ def delete_rating(entity):
     if count == 0: return abort(404)
     return { "rating": None }
 
-# Merge ratings and update DB
+# Merge ratings and update DB. Return empty list of choices and clocks if setclock is 
+# older than any of the existing clocks in the DB.
 # PARAMS:
 #    key       - key for the tea
 #    oldrating - old rating (can be None, in which case the old rating will be retrieved
@@ -249,6 +212,32 @@ def merge(key, oldrating, setrating, setclock):
         new_choices = []
 
     return writeToDB, finalrating, new_choices, new_vcl
+
+# Gossip protocol
+def gossip():
+    global digest_list
+    while 1:
+        msg = queue.get(db_id)
+        # Stop if there's no message in the queue
+        if msg == None:
+            break
+        # Merge and pass on if the message was not originally PUT by this DB instance
+        elif msg['primary'] != db_id:
+            rating = None
+            choices = []
+            clocks = []
+            for i in range(len(msg['clocks'])):
+                key = msg['key']
+                _, rating, choices, clocks = merge(key, None, msg['choices'][i], msg['clocks'][i])
+                digest_list.append((msg['primary'], key, rating, choices, clocks))
+
+    # At 'config['digest-length']'th write, fire everything in digest list to its neighbor
+    if len(digest_list) >= config['digest-length']:
+        nextNeighbor = 'db'+str((id+1)%ndb)
+        for digest in digest_list:
+	    (primary, key, rating, choices, clocks) = digest
+            queue.put(nextNeighbor, {'primary': primary, 'key': key, 'rating': rating, 'choices': choices, 'clocks': clocks})
+        digest_list = []
 
 # Turn a list of vector clocks into a JSON formatted string to be stored in redis
 def jsonify_vcl(vcl):
