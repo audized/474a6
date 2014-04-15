@@ -269,7 +269,8 @@ def makeVC(cl, count):
     return VectorClock().update(cl, count)
 
 def info(msg):
-    sys.stdout.write(colored('ℹ', 'green')+' '+msg+'\n')
+    #sys.stdout.write(colored('ℹ', 'green')+' '+msg+'\n')
+    sys.stdout.write('*'+msg+'\n')
     sys.stdout.flush()
 
 def flush():

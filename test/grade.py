@@ -111,45 +111,45 @@ def aggregate(entries, normalize=True, weight=1.0):
 def single(value, weight=1.0):
     return { 'grade': value, 'weight': weight }
 
-@grade(weight=0.05)
+@grade(weight=0.10)
 def simple(results):
-    return checklist(results)
+    return checkMultiple(results)
 
-@grade(weight=0.05)
+@grade(weight=0.10)
 def simpleEv(results):
     sample = allGe(results, filter=lambda rtype: rtype=='GE')
     if sample['grade'] != 1.0: return sample
-    return checklist(results, filter=lambda rtype: rtype[0:7]=='EXPECT_')
+    return checkMultiple(results, filter=lambda entry: entry['type'][0:7]=='EXPECT_')
 
-@grade(weight=0.05)
+@grade(weight=0.10)
 def discardOlderRating(results):
-    return checklist(results)
+    return checkMultiple(results)
 
-@grade(weight=0.05)
+@grade(weight=0.10)
 def testDBUnit(results):
-    return checklist(results)
+    return checkMultiple(results)
 
-@grade(weight=0.05)
+@grade(weight=0.20)
 def forceGossip(results):
-    return checklist(results)
+    return checkMultiple(results)
 
 @grade(weight=0.05)
 def digestLength1(results):
-    return checklist(results)
+    return checkMultiple(results)
 
 @grade(weight=0.05)
 def simpleOneDB(results):
-    return checklist(results)
+    return checkMultiple(results)
 
-@grade(weight=0.05)
+@grade(weight=0.10)
 def testGetGossip(results):
     return checkMultiple(results, lambda ent: ent['type'] in ('bool', 'float'))
 
-@grade(weight=0.05)
+@grade(weight=0.10)
 def highVolume(results):
-    return checklist(results)
+    return checklist(results, factor=0.85)
 
-@grade(weight=0.05)
+@grade(weight=0.10)
 def convergence(results):
     return checklist(results)
 
@@ -225,8 +225,10 @@ def errors(entry, errFound, level=0):
     return errFound
 
 if args.format == 'text':
-    #print('\n### GRADING ###\n')
-    #dump(final)
+    print('\n### GRADING ###\n')
+    print('*** For 80% of grade covered by tests:\n')
+    dump(final)
+    print('\n*** Remaining 20% based upon code review***\n')
     errFound = errors(final, False)
     if not errFound:
         print('\n### NO ERRORS ###\n')
